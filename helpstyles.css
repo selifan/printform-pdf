@@ -1,0 +1,16 @@
+body     { font-family:verdana,arial,helvetica;font-size:12px; }
+pre { font-family: verdana,arial; font-size:11px; color:#0000FF;
+      background-color: #EFEFF0; border: 1px solid #D0D0F0; padding:6px;
+}
+td   { font-family:arial,helvetica;font-size:12px;}
+th, td.head  { background-color: #F0F0F8; font-weight:bold; padding-left:6px; border:1px solid #aaa; font:bold 12px tahoma,arial;}
+tr.odd   { background-color: #F8F8FC; }
+tr.even  { background-color: #E0E0F0; }
+h4       { background-color: #E0E0F0; color:#000000;
+           text-align: left; font-size:12px; }
+h5       { background-color: #E0E0F0; color:#000000;
+           text-align: left; font-size:11px; padding-left:8px;}
+hr		{ height:1px; border:0; color: #aae;}
+table { border-collapse: collapse; }
+td { border: 1px solid #aaa; padding-left:0.3em;}
+td.topic { padding-left:0.6em; }
