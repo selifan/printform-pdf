@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<printdef>
+  <version modified="2012-11-02">1.0</version>
+  <title>Visit card template</title>
+  <baseparameters>
+    <margins left="0" top="0" right="0" bottom="0" />
+    <font name="arial" size="8" />
+    <page orientation="P" size="A4" units="mm" />
+  </baseparameters>
+
+  <pages>
+   <page>
+   <template page="1" />
+    <field name="corner1" type="poly" posx="10,10,14" posy="14,10,10" color="#AAA" />
+    <field name="corner2" type="poly" posx="91,95,95" posy="10,10,14" color="#AAA" />
+    <field name="corner3" type="poly" posx="10,10,14" posy="61,65,65" color="#AAA" />
+    <field name="corner4" type="poly" posx="91,95,95" posy="65,65,61" color="#AAA" />
+
+    <field name="logo" type="image" posx="12" posy="12" width="26" height="26" src="logo.png" />
+    <field name="lastname" posx="45" posy="20" width="35" color="#008" size="14" />
+    <field name="firstname" posx="45" posy="28" width="35" size="12"/>
+    <field name="patronimname" posx="45" posy="35" width="35"  size="12" />
+    <field name="duty"         posx="45" posy="42" width="35" size="7"/>
+    <field name="phones"       posx="15" posy="52" width="75" align="C" size="7"/>
+    <!-- duplicate card on the page -->
+    <repeat offset_x="88" offset_y="0" />
+    <repeat offset_x="0" offset_y="57" />
+    <repeat offset_x="88" offset_y="57" />
+    <repeat offset_x="0" offset_y="114" />
+    <repeat offset_x="88" offset_y="114" />
+    <repeat offset_x="0" offset_y="171" />
+    <repeat offset_x="88" offset_y="171" />
+    <repeat offset_x="0" offset_y="228" />
+    <repeat offset_x="88" offset_y="228" />
+
+   </page>
+  </pages>
+</printdef>
