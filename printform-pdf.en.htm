@@ -33,6 +33,9 @@ with "a little help" of FPDF / FPDFI classes, used for loading source PDF templa
    </li>
   <li>Duplicating data on the sheet if needed (printing business cards etc.)</li>
   <li>class has few experimental "bonus" functions (generating lined sheet, blank "music sheets", and Sudoku puzzle)</li>
+  <li>(since 1.1) supporting of <a href="#plugins">plugins</a> for printing new graphical objects inside PDF page</li>
+  <li>(since 1.4) supporting specific fields to be printed on every document page (logos, bar-codes, "DEMO-PAGE" notificatuins etc.)</li>
+
 </ul>
 
 
@@ -205,7 +208,7 @@ $pdf-&gt;AddData($data);
   <li>All "grid" data can be passed as a part of full user data while calling AddData() method.<br>
   You have to use specific 'field name' for that case, that contains prefix 'grid:' and grid ID:
   <br>
-  <pre>$data['drid:empl_grid'] = array(
+  <pre>$data['grid:empl_grid'] = array(
      array('emp_name'=&gt;'Joshua Gordon', 'emp_birth'=&gt;'1980-04-20')
     ,array('emp_name'=&gt;'Alex Johnson', 'emp_birth'=&gt;'1975-10-09')
 );
@@ -214,9 +217,6 @@ $pdf-&gt;Render();
   </pre>
   </li>
 </ol>
-
-</p>
-
 
 <h4>Bonus features</h4>
 
@@ -357,17 +357,12 @@ Here is full description for configuration parameters in XML file.
   describes one printed page (positions and other parameters for printing user data)</td></tr>
 
   <tr>
-    <td rowspan="4"><b>template</b></td><td colspan="3">Tag &lt;template&gt; sets PDF file name, used as "source" for this page of document.
+    <td rowspan="3"><b>template</b></td><td colspan="3">Tag &lt;template&gt; sets PDF file name, used as "source" for this page of document.
     <br>Example: &lt;template src="template.pdf" page="1" /&gt; </td>
   </tr>
   <tr>
     <td>attribute <b>src</b></td><td>full PDF filename with a path (if nessesary). If not set, "main" template PDF will be used for this page.</td><td></td>
   </tr>
-<!--
-  <tr>
-    <td>attribute <b>altsrc</b></td><td>the name of <a href="#alterpdf">alternate PDF</a> template file. If not set, "main" alternate PDF will be used for this page.</a></td><td></td>
-  </tr>
--->
   <tr>
     <td>attribute <b>page</b></td><td>sais what page of source file will be used as "template" for the current document page (numeration starts with 1). If you want draw PDF template for this page,
     you must pass non-zero page value.</td><td>0</td>
@@ -492,6 +487,16 @@ But what if user has a "typografic" document blanc with all needed elements ?
 <br>you prepare "clean" PDF template, store it's name in "altsrc" attribute, and call SetAltTemplate() before final Render() method,
 and voila, the final PDF will be pretty good for drawing on typografic printed form.
 -->
+
+<br><br>
+<b>addPageDef($opts=array())</b> - programmatically adds definition for one PDF page. You can prepare associative array that contains the following items
+and pass it ti this method:
+<br>
+<b>$opts['template']</b> - associative array, describes source PDF file parameters to use as "template" for the page (See template attributes for all supported values)
+<b>$opts['fields']</b> - associative array, describes all fields on this page (See "field" attributes for all supported values)<br>
+<b>$opts['repeat']</b> - array, describes <a href="#f_repeat">"repetition"</a> on the page. Equivalent to "repeat" tag in XML configuration file.
+
+
 <br><br>
 <b>AddFieldDefinition($ipage, $parm)</b> used to programmatically add one field definition for the page.
 <br>$ipage - page number, $parm - associative array with field definition, all possible keys described earlier for the field tag:
@@ -510,6 +515,9 @@ posx, posy, width, height, type, etc.
 <br><br>
 <b>setCreator($strg)</b>  sets Creator attribute for the PDF.
 
+<br><br><a name="disableImages"></a>
+<b>disableImages($par=true)</b> - turns off drawing of all images on the docyment. May be useful if you want to hide stamps, logos or faximile signatures in the case of test printing or whatelse.
+
 <br><br>
 <b>AddData($entitydata)</b> passes whole user data block for one printed document.
 It's possible to call this more than once: every AddData() creates the full document in output PDF.
@@ -525,6 +533,18 @@ find right <b>posx</b> and <b>posy</b> coordinates for all your data.
 <br>$step is a horizontal and vertical step, $color is grid color. By default step is 10mm.
 If you pass "1" value or TRUE, this interpreted as "Yes" (not 1mm), mean 'yes, print the grid with default step 10mm'.
 Default grid color - gray, (RGB: 80,80,80).
+
+<br><br>
+<b>addPluginData($name, $data)</b> : passes data that must be visualized in "plugin" field, by calling respective plugin methods.
+See details in <a href="#plugins">plugins section</a>.
+
+<br><br><a name="setResourcePaths"></a>
+<b>setResourcePaths($pdfPath=null, $imgPath=null)</b> : by default printformPdf treats all PDF templates and image file names in "current folder" context.
+But all these "resources" may be placed somewhere else, in special sub-folder "resources/" for example. If you don't want to add this (sometimes quite long) paths to ALL
+"src" attributes in your XML configuration file, just use this method to add "real folders" where these files located.
+<br>First parameter <b>$pdfPath</b> sets path for PDF template files, and <b>$imgPath</b> set the path for images.
+
+
 
 <br><br><b>Render($output=true)</b> : Finally creates output PDF document and sends it to the client (http stream) or saves to the disc
 (depends on active mode).
@@ -656,9 +676,118 @@ $pdf-&gt;Render();
 
 </pre>
 
-<h4>Bonus (experimental) functions</h4>
+<a name="apfields"></a>
+<h4>Fields printed on all pages</h4>
+
+Sometimes we need to print one text, bar-code or image on the same place in every document page (with the same font, size, rotation etc.)
+Of cource you could insert this &lt;field&gt; definition in all "page" sections. But it would be more convenient to do it once, isn't it ?
+Here is "allpages" section top help us. &lt;field&gt;. It must be placed inside "root" element of XML configuration file, and should contain standard "field" definitions for
+every "all pages" field.
+<br>
+Below is example (we want a bar-code at the bottom ao all pages):
+<pre>
+&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;printdef&gt;
+  &lt;version&gt;1.0&lt;/version&gt;
+  &lt;title&gt;Testing PDF generation&lt;/title&gt;
+  &lt;allpages&gt;
+    &lt;field name="bar_code01" type="barcode" posx="100" posy="280" width="50" height="5" options="text" value="012345678" /&gt;
+  &lt;/allpages&gt;
+  ...
+&lt;/printdef&gt;
+</pre>
+the only difference in <b>field</b> tag is "value" attribute support - we can set desired text (value) for all pages right in XML file.
+And, you can change this value programmatically by calling method setAllPagesFieldValue($filename, $value), or by passing value with the same field name in "user data", passed in
+addData(). Remember: value from user data has a priority above "default" value from XML or passed in setAllPagesFieldValue().
+
+<br><br>And there is a method <b>addAllPagesField</b>($fdef, $value=null), that adds one field definition for "all pages", it is equivalent to one <b>field</b> sction in <b>allpages</b> block of your
+XML-config file.
+
+
+<a name="plugins">
+</a><h4>Plugin support</h4>
+
+Since version 1.1 printform-pdf supports new feature - plugins. There is a new abstract class definition, <b>PfPdfPlugin</b>, that is a skeleton
+for all plugins that can be connected to class CPrintformPdf.
+<br>
+In CPrintformPdf context plugin performs rendering inside rectangle area, specified by start coordinates and width and height.
+First you write your own php class file, that extends PfPdfPlugin and implements following methods:
+<br><br>
+<b>__construct($tcpdfobj, $cfg = null, $x=0, $y=0, $w=0, $h=0)</b> - class constructor, that should receive a TCPDF object reference as a context to output,
+ optional array of configuration parameters ($cfg), and x-position, y-position, width and height of "plot area" (parameters $x,$y,$w,$h respectively).
+
+<br><br><b>Render($data)</b> - the main method that will generate output inside plot area. It should receive one parameter, data to be visualised.
+
+<br><br>To use plugin, you should include it in your program module AFTER printform-pdf.php:
+
+<pre>
+require_once('printform-pdf.php');
+require_once('my-plugin.php');
+</pre>
+
+Next, add a "plugin" definition in "page" area of your XML configuration file:
+
+<pre>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;printdef&gt;
+  ...
+  &lt;pages&gt;
+   &lt;page&gt;
+      &lt;template page="1" /&gt;
+      &lt;field name="cityname" posx="143" posy="26" /&gt;
+      &lt;field name="personname" posx="42" posy="26" /&gt;
+      &lt;field name="person_firstname" posx="88" posy="26" width="20" /&gt;
+      &lt;field name="person_birthdate" posx="42" posy="32" width="70" /&gt;
+      &lt;field name="person_document" posx="143" posy="32" width="55" /&gt;
+      <b>&lt;plugin name="chart_gantt" type="my_plugin_classname" posx="10"  posy="160" width="180" height="80"
+        options="dateformat=d.m,descr_width=0.25,arrow_color=#F22,shade_color=#BBB" /&gt;</b>
+   &lt;/page&gt;
+  &lt;/pages&gt;
+&lt;/printdef&gt;
+</pre>
+
+Note then "type" value ("my_plugin_classname" in our example) must be your plugin class name, that extends PfPdfPlugin.
+CPrintformPDF treats "plugin" item as a special "field" (that's why we place it between ordinary fields definition list) :
+<br>it renders it in order of appearance in the list, applies optional "bgcolor" an "rotate" values
+(so image created by plugin can have desired background color and beeng rotated to some angle).
 
 <br><br>
+And finally, somewhere in your code you prepare data to be visualized, and pass it to the CPrintformPdf object by method
+<b>setPluginData($name, $data)</b>, before calling final Render() method.
+<br>
+<br><b>$name</b> is a name of your plugin "pseudo-field" as it set in the "name" attribute of "plugin" tag.
+<br><b>$data</b> is your data to visualize.
+Type and structure of this parameter is fully at your choice, as it's you the plugin's author, aren't you ?
+
+<br><br>CPrintformPdf tries to create new instance of your class, passing to it's constructor a TCPDF object ref,current configuration parameters and position of plot area.
+Configuration parameters array is constructed from current CPRintformPdf common parameters (including current "stringcharset" value) and options defined
+in "<b>options</b>" attribute of plugin tag. "options" value must have a form of comma-delimited string, where each item is "optname=value".
+This options string is parsed to associative array ($options = array('optname =&gt;value,...) ) and passed to the plugin constructor function.
+
+<br><br>Below is a simple example of plugin class
+<pre>
+class PfPdf_Gantt extends PfPdfPlugin {
+    private $_config = array();
+    private $tcpdf_obj = null;
+    private $xpos,$ypos,$width,$height;
+    public function __construct($pdfobj, $config=null, $x=0,$y=0,$w=0,$h=0) {
+        $this-&gt;tcpdf_obj = $pdfobj;
+        $this-&gt;xpos = $x;
+        $this-&gt;ypos = $x;
+        $this-&gt;width = $w;
+        $this-&gt;height = $h;
+        $this-&gt;_config = $config;
+    }
+    public function Render($data) { // just draw a rectangle
+        $this-&gt;tcpdf_obj-&gt;Rect($this-&gt;xpos,$this-&gt;ypos,$this-&gt;width,$this-&gt;height,'D');
+    }
+}
+</pre>
+
+<br>To see a working CPrintformPdf plugin, try to search in this site for "pdf_gantt" class.
+It draws Gantt charts and can work standalone and as a CPrintformPdf plugin.
+
+<h4>Bonus (experimental) functions</h4>
+
 <a name="AddPageLined"></a>
 <b>AddPageLined($title='',$options=null)</b> creates clean "lined" page (that has horisontal and/or vertical lines) with desired parameters like distance between lines and color.
 <br><br><b>$title</b> - Optional page title, it is printed on the top.
@@ -756,10 +885,39 @@ Used puzzle generation algorithm sometimes may return empty puzzle, so some puzz
 <br>
 Probably, you're trying to use "packed" PDF file, having unsupported packing (shrinking) algorithm, that is unsupported by classes FPDF / FPDFI.
 For example, ZIP packed PDF can't be loaded. It's because modules written on PHP cannot "understand" some PDF format features..
-Solutoin: re-save Your template PDF without shrinking.
+<br>
+Solution: re-save Your template PDF without shrinking.
 
+<h4>Change log</h4>
 
-<h5>1.00 (11/14/2012)</h5>
+<h5>1.4.0023 (2014-04-16)</h5>
+<ul>
+  <li>Added <a href="#apfields">"All Pages Fields"</a> support </li>
+  <li>Added <a href="#setResourcePaths">setResourcePaths()</a> function</li>
+</ul>
+
+<h5>1.3.0020 (2014-02-01)</h5>
+<ul>
+  <li>Added <a href="#disableImages">disableImages()</a> function</li>
+  <li>Added <a href="#f_repeat">repeat</a> feature</li>
+</ul>
+
+<h5>1.2 (2013-12-10)</h5>
+<ul>
+  <li>Added <a href="#addPageDef">addPageDef()</a> function, to load page definition programmatically</li>
+</ul>
+
+<h5>1.1.0017 (2013-05-22)</h5>
+<ul>
+  <li>bugfix: class raises error on convertHTMLColorToDec() calling, because of TCPDF 6.x has moved convertHTMLColorToDec() to static methods in TCPDF_COLORS class</li>
+</ul>
+
+<h5>1.1 (2013-04-26)</h5>
+<ul>
+  <li>new: plugin support (abstract class PfPdfPlugin)</li>
+</ul>
+
+<h5>1.00 (2012-14-11)</h5>
 <ul>
   <li>First release published
   </li>
@@ -767,7 +925,12 @@ Solutoin: re-save Your template PDF without shrinking.
 
 <!-- DOC END -->
 <br />
+
+<br /><br />
+
+<div style="text-align:right">Distributed under: BSD License</div>
+<br>
 <hr>
-<div align=center><font size=-2>Copyright &copy; 2012 Alexander Selifonov, <a href="http://www.selifan.ru">www.selifan.ru</a>
+<div align=center><font size=-2>Copyright &copy; 2012-2013 Alexander Selifonov, <a href="http://www.selifan.ru">www.selifan.ru</a>
 </font></div>
 </body></html>

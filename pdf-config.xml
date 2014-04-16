@@ -12,7 +12,11 @@
     <page orientation="P" size="A4" units="mm" />
   </baseparameters>
 
- <pages>
+  <allpages>
+     <field name="demo_barccode" type="barcode" posx="80" posy="285" width="50" height="4" options="text" value="TEST-1234" />
+  </allpages>
+  
+  <pages>
    <page>
       <template src="pdf-template.pdf" page="1" />
       <field name="cityname" posx="143" posy="26" />

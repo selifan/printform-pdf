@@ -6,28 +6,53 @@
 * @uses TCPDF, FPDFI classes used for reading/writing pdf body, see http://www.tcpdf.org/
 * @uses Sudoku class by Richard Munroe (munroe@csworks.com) used  for creating Sudoku puzzle pages
 * @Author Alexander Selifonov, <alex [at] selifan {dot} ru>
-* @version 1.00 build 0015 2012-11-13
+* @version 1.4.0023 2014-04-16
 * @Link: http://www.selifan.ru
 * @license http://www.opensource.org/licenses/bsd-license.php    BSD
 *
 **/
 if(!class_exists('TCPDF',false)) {
+    # You should this it in your module BEFORE include printform-pdf.php,
+    #  and include your TCPDF language module rather then my case, lang/rus.php
     require_once('tcpdf/config/lang/rus.php');
     require_once('tcpdf/tcpdf.php');
     require_once('fpdf/fpdi2tcpdf_bridge.php');
     require_once('fpdf/fpdi.php');
 }
 
+/**
+* Abstract class for PrintFormPDF plugins - modules that will draw by specific algorhytms in desired rectangle regions
+* @since 1.1.0016 (2013-01-20)
+*/
+abstract class PfPdfPlugin {
+
+    var $_error_message = 'no error';
+    abstract public function __construct($tcpdfobj, $cfg = null, $x=0,$y=0,$w=0,$h=0);
+    # Render method should draw something according to passed _data,  inside defined rectangle area (_region_pos, _region_dim)
+    abstract public function Render($data);
+
+    public function setAreaPosition($x, $y, $w=0, $h=0) {
+        $this->_region_pos = array(floatval($x),floatval($y));
+        $this->_region_dim = array(floatval($w),floatval($h));
+        return $this;
+    }
+    public function getErrorMessage() { return $this->_error_message; }
+}
+
 class CPrintFormPdf {
+
+    const DEFAULT_MARGIN = 5;
     private $_data = array();
+    private $_pageno = 0;
+    private $_pluginData = array();
     private $_basepar = array();
     protected $_templatefile = ''; # source file to be used as template
-    protected $_alttemplatefile = ''; # source file to be used as template
+    protected $_alttemplatefile = ''; # alternative template
     private $_outname = '';
     private $_pdf = null;
     private $_tofile  = false;
     private $_configfile = '';
-    private $_config = array();
+    protected $_config = array();
     protected $_pagedefs = array();
     private $_errormessage = '';
     private $_alttemplate = false;
@@ -39,7 +64,15 @@ class CPrintFormPdf {
     private $_datagrids = array();
     private $_curGridRow = array();
     private $_specialPages = 0;
-
+    private $_mpgrid = FALSE; # becomes TRUE if multi-paging grid detected
+    private $_hide_pages = array();
+    private $_images_disabled = false;
+    private $_homedir = ''; # directory wher loaded XML file resides
+    private $_pdf_path = ''; # PDF templates folder
+    private $_img_path = ''; # images folder
+    private $_apFields = array(); # fields to draw on every page
+    private $_apValues = array(); # values for All Pages fields
+    protected $spot_colors = array();
     public function __construct($param='') {
         $loadData = NULL;
         $this->_basepar = array(
@@ -54,6 +87,7 @@ class CPrintFormPdf {
             ,'protectfile' => false
         );
         if(is_array($param)) {
+
             if(isset($param['template'])) $this->_templatefile = (string)$param['template'];
             if(isset($param['alttemplate'])) $this->_alttemplatefile = (string)$param['template'];
             if(isset($param['outname']))  $this->_outname= $param['outname'];
@@ -67,13 +101,18 @@ class CPrintFormPdf {
             if(isset($param['author'])) $this->_config['author'] = (string)$param['author'];
             if(isset($param['creator'])) $this->_config['creator'] = (string)$param['creator'];
             if(isset($param['stringcharset'])) $this->_config['stringcharset'] = (string)$param['stringcharset'];
+            if(isset($param['pdfpath'])) $this->_pdf_path = (string)$param['pdfpath'];
+            if(isset($param['imgpath'])) $this->_img_path = (string)$param['imgpath'];
         }
         elseif(is_scalar($param)) { # configuration XML filename or whole XML string was passed
             $this->_configfile = $param;
         }
         if(!empty($this->_configfile)) {
+            $this->_homedir = dirname($this->_configfile) .'/';
             $ok = $this->LoadConfig();
         }
+
+        $this->_pageno = 0;
     }
     /**
     * Loads configuration from prepared XML file, see it's format in docs and examples
@@ -87,13 +126,13 @@ class CPrintFormPdf {
         else $this->_configfile = $cfgname;
         $ret = true;
 
-        if(is_file($cfgname)) { $xml = @simplexml_load_file($cfgname); }
+        if(is_file($cfgname)) { $xml = simplexml_load_file($cfgname); }
         elseif(substr($cfgname,0,5)=='<'.'?xml') { $xml = @simplexml_load_string($cfgname); }
         else {
             $this->_errormessage = 'Configuration XML file not found:  '.$cfgname;
             return false;
         }
-
+#        echo '<pre> xml obj:<br>'; print_r($xml); echo '</pre>';
         if(!($xml) OR !@isset($xml->pages)) {
             $this->_errormessage = 'Wrong XML file or XML string syntax, '.$cfgname;
             echo $this->_errormessage ;
@@ -112,6 +151,12 @@ class CPrintFormPdf {
             if(isset($xml->baseparameters->page['size'])) $this->_basepar['page']['size'] = (string)$xml->baseparameters->page['size'];
             if(isset($xml->baseparameters->page['units'])) $this->_basepar['page']['units'] = (string)$xml->baseparameters->page['units'];
         }
+
+        if(isset($xml->baseparameters->pdfpath)) {
+            $this->_pdf_path = (string)$xml->baseparameters->pdfpath;
+        }
+        if(isset($xml->baseparameters->imgpath)) $this->_img_path = (string)$xml->baseparameters->imgpath;
+
         if(isset($xml->baseparameters->font)) {
             if(isset($xml->baseparameters->font['name'])) $this->_basepar['font']['name'] = (string)$xml->baseparameters->font['name'];
             if(isset($xml->baseparameters->font['size'])) $this->_basepar['font']['size'] = (float)$xml->baseparameters->font['size'];
@@ -129,6 +174,16 @@ class CPrintFormPdf {
             if(!empty($xml->baseparameters->templatefile['altsrc']))
                 $this->_alttemplatefile = (string)$xml->baseparameters->templatefile['altsrc'];
         }
+        if(isset($xml->allpages)) { # All Pages Fields exist, load them!
+            foreach($xml->allpages->children() as $key=>$item) {
+                if($key === 'field' OR $key ==='image') {
+                    $value = isset($item['value'])? trim("{$item['value']}") : null;
+                    if($value !=='' and strtoupper($this->_config['stringcharset']) !== 'UTF-8')
+                        $value = iconv('UTF-8',$this->_config['stringcharset'],$value);
+                    $this->addAllPagesField($item, $value);
+                }
+            }
+        }
         $fileversion = isset($xml->version) ? $xml->version : 1; # for future needs
 
         if(!empty($this->_config['templatefile'])) $this->_templatefile = (string)$this->_config['templatefile'];
@@ -138,7 +193,9 @@ class CPrintFormPdf {
         $fldcnt = 0;
         foreach($xml->pages->children() as $key => $pageitem) {
             $pageno = isset($pageitem['number']) ? (int) $pageitem['number'] : $ipage;
-            $this->_pagedefs[] = array('pageno'=>$pageno, 'fields'=>array(), 'repeat'=>array());
+            $hide_it = isset($pageitem['hide']) ? (int) $pageitem['hide'] : 0;
+            if($hide_it) $this->_hide_pages[$pageno] = true;
+            $this->_pagedefs[] = array('pageno'=>$pageno, 'fields'=>array(), 'repeat'=>array(), 'hide'=>$hide_it);
             foreach($pageitem->children() as $key=>$item) {
                 if($key=='template') { # указан PDF-шаблон для данной страницы
                     $this->_pagedefs[$ipage]['template'] = array(
@@ -148,37 +205,16 @@ class CPrintFormPdf {
                     );
                     continue;
                 }
-                elseif($key=='field' OR $key=='image') {
+                elseif($key=='field' OR $key=='image' OR $key=='plugin') {
                     $fldname = isset($item['name'])? trim("{$item['name']}") : '';
                     if(!$fldname) continue;
-                    $newar = array(
-                       'name'    => strtolower($fldname)
-                      ,'type'    => (isset($item['type']) ? strtolower((string)$item['type']) : 'text')
-                      ,'posx'    => (isset($item['posx']) ? explode(',', (string) $item['posx']) : array(0))
-                      ,'posy'    => (isset($item['posy']) ? (float) $item['posy'] : 0)
-                      ,'charstep'=> (isset($item['charstep']) ? (float)$item['charstep'] : 0)
-                      ,'maxlength'=> (isset($item['maxlength']) ? (int)$item['maxlength'] : 0)
-                      ,'width'   => (isset($item['width']) ? (float) $item['width'] : 0)
-                      ,'height'  => (isset($item['height']) ? (float) $item['height'] : 0)
-                      ,'font'    => (isset($item['font']) ? (string) $item['font'] :'')
-                      ,'size'    => (isset($item['size']) ? (float) $item['size'] : 0)
-                      ,'convert' => (isset($item['convert']) ? (string) $item['convert'] : '')
-                      ,'color'   => (isset($item['color']) ? (string) $item['color'] : '')
-                      ,'bgcolor'   => (isset($item['bgcolor']) ? (string) $item['bgcolor'] : '')
-                      ,'rotate'  => (isset($item['rotate']) ? (float) $item['rotate'] : 0)
-                      ,'norepeat'  => (isset($item['norepeat']) ? (int) $item['norepeat'] : 0)
-                      ,'align'   => (isset($item['align']) ? (string) $item['align'] : '')
-                      ,'options' => (isset($item['options']) ? (string) $item['options'] : '')
-                      ,'src'     => (isset($item['src'])? (string)$item['src'] : '')
-                    );
-                    if($newar['type'] == 'rectangle' || $newar['type'] == 'rect') { # draw a rectangle, 'width' & 'height' sets its width/height
-                        $newar['type'] = 'rect';
-                    }
-                    elseif($newar['type'] == 'poly' || $newar['type'] == 'polygone') { # draw a polygone, and posy must contain at least 2 values: x0,x1, y0,y1
-                        $newar['type'] = 'poly';
-                        $newar['posy'] = (isset($item['posy']) ? explode(',', (string) $item['posy']) : array(0));
-                    }
+                    $newar = $this->_prepareFieldDef($item);
                     if($key=='image') $newar['type'] = 'image';
+                    if($key=='plugin' || $newar['type']=='plugin') { # drawing specific data plugin
+                        $newar['plugintype'] = isset($item['plugintype']) ? strtolower((string)$item['plugintype']) : '';
+                        if($newar['plugintype']=='' && $newar['type']!='plugin') $newar['plugintype'] = $newar['type'];
+                        $newar['type'] = 'plugin';
+                    }
                     $this->_pagedefs[$ipage]['fields'][] = $newar;
                     $fldcnt++;
                 }
@@ -194,6 +230,7 @@ class CPrintFormPdf {
                         ,'posy'  => (isset($item['posy']) ? (string)$item['posy'] : '0')
                         ,'step_y'=> (isset($item['step_y']) ? (float)$item['step_y'] : 0)
                         ,'rows'  => (isset($item['rows']) ? (int)$item['rows'] : 2)
+                        ,'multipage' =>(isset($item['multipage']) ? (int)$item['multipage'] : false)
                     );
                 }
                 elseif($key=='repeat') { # repeat all data on the sheet, with x/y shifting
@@ -237,6 +274,38 @@ class CPrintFormPdf {
             $ret = false;
         }
         return $ret;
+    }
+    /**
+    * Disables/enables all images import (debug needs)
+    * @since 1.3.0020
+    * @param mixed $par
+    */
+    public function disableImages($par=true) {
+        $this->_images_disabled = $par;
+    }
+    public function setResourcePaths($pdfPath=null, $imgPath=null) {
+        if($pdfPath!==null) $this->_pdf_path = $pdfPath;
+        if($imgPath!==null) $this->_img_path = $imgPath;
+    }
+    /**
+    * Add page definition programmatically
+    * Programmer can add some PDF templates to output document without editing XML config-file
+    * @since 1.2
+    * @param mixed $opts
+    */
+    public function addPageDef($opts=array()) {
+        $ipage = count($this->_pagedefs);
+        $pg = array();
+        $pg['pageno'] = (isset($opts['pageno']) ? $opts['pageno'] : $ipage);
+        $pg['fields'] = (isset($opts['fields']) ? $opts['fields'] : array());
+        $pg['repeat'] = (isset($opts['repeat']) ? $opts['repeat'] : array());
+        $pg['hide'] = (isset($opts['hide']) ? $opts['hide'] : false);
+        $pg['template'] = array(
+           'src' => (isset($opts['src']) ? (string)$opts['src'] : '')
+          ,'altsrc' => (isset($opts['altsrc']) ? (string)$opts['altsrc'] : '')
+          ,'page' => (isset($opts['page']) ? (int)$opts['page'] : 1)
+        );
+        $this->_pagedefs[$ipage] = $pg;
     }
     /**
     * Get contents of base config, to be able programmatically saving XML def.
@@ -361,6 +430,66 @@ class CPrintFormPdf {
         if($color) $this->_gridColor = $color;
         else $this->_gridColor = array(80,80,80);
     }
+
+    /**
+    * Adds field definition (and possible value) to ALL PAGES (AP) in document.
+    * For drawing "DRAFT" sign, bar-code, logo image and so on, on every PDF page
+    * @param mixed $fdef full field definition array: name,type, posx,posy,rotate,color,...
+    * @param mixed $value optional initial value for the field
+    * @since 1.4
+    */
+    public function addAllPagesField($fdef, $value=null) {
+        $new_fld = $this->_prepareFieldDef($fdef);
+        $name = $new_fld['name'];
+        $this->_apFields[$name] = $new_fld;
+        if($value) $this->_apValues[$name] = $value;
+    }
+
+    /**
+    * Sets value for one "AP" field
+    * @param mixed $fldname field name
+    * @param mixed $value new value
+    * @since 1.4
+    */
+    public function setAllPagesFieldValue($fldname, $value) {
+        $this->_apValues[$fldname] = $value;
+    }
+    /**
+    * Reads user (possibly not full) field definition and return a full definition for working
+    *
+    * @param mixed $item
+    */
+    private function _prepareFieldDef($item) {
+        $fldname = isset($item['name'])? trim("{$item['name']}") : '_field_'.rand(1000000,9999999);
+        $ret = array(
+           'name'    => strtolower($fldname)
+          ,'type'    => (isset($item['type']) ? strtolower((string)$item['type']) : 'text')
+          ,'posx'    => (isset($item['posx']) ? explode(',', (string) $item['posx']) : array(0))
+          ,'posy'    => (isset($item['posy']) ? (float) $item['posy'] : 0)
+          ,'charstep'=> (isset($item['charstep']) ? (float)$item['charstep'] : 0)
+          ,'maxlength'=> (isset($item['maxlength']) ? (int)$item['maxlength'] : 0)
+          ,'width'   => (isset($item['width']) ? (float) $item['width'] : 0)
+          ,'height'  => (isset($item['height']) ? (float) $item['height'] : 0)
+          ,'font'    => (isset($item['font']) ? (string) $item['font'] :'')
+          ,'size'    => (isset($item['size']) ? (float) $item['size'] : 0)
+          ,'convert' => (isset($item['convert']) ? (string) $item['convert'] : '')
+          ,'color'   => (isset($item['color']) ? (string) $item['color'] : '')
+          ,'bgcolor' => (isset($item['bgcolor']) ? (string) $item['bgcolor'] : '')
+          ,'rotate'  => (isset($item['rotate']) ? (float) $item['rotate'] : 0)
+          ,'norepeat'=> (isset($item['norepeat']) ? (int) $item['norepeat'] : 0)
+          ,'align'   => (isset($item['align']) ? (string) $item['align'] : '')
+          ,'options' => (isset($item['options']) ? (string) $item['options'] : '')
+          ,'src'     => (isset($item['src'])? (string)$item['src'] : '')
+        );
+        if($ret['type'] === 'rectangle' || $ret['type'] === 'rect') { # draw a rectangle, 'width' & 'height' sets its width/height
+            $ret['type'] = 'rect';
+        }
+        elseif($ret['type'] === 'poly' || $ret['type'] === 'polygone') { # draw a polygone, and posy must contain at least 2 values: x0,x1, y0,y1
+            $ret['type'] = 'poly';
+            $ret['posy'] = (isset($item['posy']) ? explode(',', (string) $item['posy']) : array(0));
+        }
+        return $ret;
+    }
     /**
     * Activates "only selected fields" printing mode
     *
@@ -405,7 +534,13 @@ class CPrintFormPdf {
             $pgno = 0;
             foreach($this->_pagedefs as $no=>$pagedef) { #<4>
                 # skip the page if no printed fields in TEST mode:
-                if(is_array($this->_printedfields) && (!isset($this->_printedfields[$no+1]) OR count($this->_printedfields[$no+1])<=0)) continue;
+                if(is_array($this->_printedfields) && (!isset($this->_printedfields[$no+1]) OR count($this->_printedfields[$no+1])<=0)) {
+                    continue;
+                }
+
+                if($pagedef['hide']) {
+                    continue; # page is temporary hidden by attrib "hide"
+                }
                 $this->_pdf->addPage();
                 $pgno++;
 
@@ -417,7 +552,8 @@ class CPrintFormPdf {
                         else $pdfTpl = $this->_alttemplatefile;
                     }
 
-                    if(!empty($pdfTpl) && is_file($pdfTpl)) try {
+                    if(!empty($pdfTpl) /*&& is_file($pdfTpl)*/) try {
+                        if(is_file($this->_pdf_path . $pdfTpl)) $pdfTpl = $this->_pdf_path . $pdfTpl;
                         $pc = $this->_pdf->setSourceFile((string)$pdfTpl);
                         $pg = $this->_pdf->importPage($pagedef['template']['page']); # pages numbers are 1-based!
                         $this->_pdf->useTemplate($pg);
@@ -434,46 +570,34 @@ class CPrintFormPdf {
                     if($this->_gridColor) {
                         $color = $this->_parseColor($this->_gridColor);
                         $this->_pdf->SetDrawColorArray($color);
+                        $this->_pdf->SetTextColorArray($color);
                     }
-
+                    $this->_pdf->SetFontSize(4.5);
 #                   $this->_pdf->SetLineWidth(0.2);
-                    for($posx=0; $posx<$pageWidth; $posx+=$this->_gridStep) $this->_pdf->Line($posx,0,$posx, $pageHeight);
-                    for($posy=0; $posy<$pageHeight; $posy+=$this->_gridStep) $this->_pdf->Line(0,$posy,$pageWidth, $posy);
+                    for($posx=0; $posx<$pageWidth; $posx+=$this->_gridStep) {
+                        $this->_pdf->Line($posx,0,$posx, $pageHeight);
+                        if($posx>0) {
+                            $this->_pdf->Text($posx+0.05, 1.0, "$posx");
+                            $this->_pdf->Text($posx+0.05, $pageHeight-5, "$posx");
+                        }
+                    }
+                    for($posy=0; $posy<$pageHeight; $posy+=$this->_gridStep) {
+                        $this->_pdf->Line(0,$posy,$pageWidth, $posy);
+                        if($posy>0) {
+                            $this->_pdf->Text(1.0, $posy+0.1, "$posy");
+                            $this->_pdf->Text($pageWidth-5, $posy+0.1, "$posy");
+                        }
+                    }
+                    $this->_pdf->SetTextColorArray(0);
+                    $this->_pdf->setFontSize($this->_basepar['font']['size']);
                 }
 #                }
-
-                if(count($pagedef['fields'])) foreach($pagedef['fields'] as $no=>$fcfg) {
-                    if(is_array($this->_printedfields) && !in_array($no, $this->_printedfields[$pgno])) continue; // print only selectd fields
-                    $fldname = $fcfg['name'];
-                    $ftype = $fcfg['type'];
-                    if(in_array($ftype,array('rect','poly','image'))) $dataentity[$fldname] = 1;
-                    if(!$debug) {
-                        if(!isset($dataentity[$fldname])) continue;
-                        if(!is_scalar($dataentity[$fldname])) continue;
-                    }
-                    else {
-                       $debugValue = ($fcfg['type']=='checkbox') ? 'X' : "XX $fldname";
-                    }
-                    $fldtype = $fcfg['type'];
-                    $strval = isset($dataentity[$fldname]) ? $dataentity[$fldname] : ($debug ? $debugValue : '');
-                    if(!empty($fcfg['convert']) && function_exists($fcfg['convert'])) # user converter function
-                       $strval = call_user_func($fcfg['convert'], $strval, $dataentity); # second param - the whole data array
-                    if($strval === '' && isset($fcfg['fillempty'])) $strval = $fcfg['fillempty']; # substitute empty value with this
-                    if($strval==='') continue;
-
-                    $initval = '';
-                    $fontsize = empty($fcfg['fontsize'])? 0 : $fcfg['fontsize'];
-                    $this->_valueToPdf($strval, $fcfg);
-                    # repeat printing with offsets defined in 'repeat' block
-                    if(empty($fcfg['norepeat']) && count($pagedef['repeat'])>0) foreach($pagedef['repeat'] as $repeat) {
-                        if(empty($repeat[2])) continue;
-                        $tmpcfg = $fcfg;
-                        foreach(array_keys($tmpcfg['posx']) as $kk) { $tmpcfg['posx'][$kk] += $repeat[0]; }
-                        if(is_array($tmpcfg['posy'])) foreach(array_keys($tmpcfg['posy']) as $kk) { $tmpcfg['posy'][$kk] += $repeat[1]; }
-                        else $tmpcfg['posy'] += $repeat[1];
-                        $this->_valueToPdf($strval, $tmpcfg);
-                    }
+                if(count($this->_apFields)) {
+#                    $values = array_merge($this->_apValues, $dataentity);
+                    $this->_renderFieldSet($this->_apFields, array_merge($this->_apValues, $dataentity)); # first print "ALL PAGES" fields
                 }
+                $this->_renderFieldSet($pagedef['fields'], $dataentity, $debug, $pagedef);
+
             } #<4>
         } #<3>
 
@@ -495,6 +619,7 @@ class CPrintFormPdf {
     * @param string $gridId  - existing datagrid definitions's ID (name)
     * @param mixed $data assoc.array containing all data values for one grid row
     * @param $returnval if true, function generates assoc/array and returns it, otherwise, adds these values to the current _data[] block.
+    * TODO: implement "multipage" grid feature: when added row exceeds grid capacity, add new page and start filling from the top.
     */
     public function AddDataGridRow($gridId, $data, $returnval=false) {
         if(!is_array($data)) return array();
@@ -502,6 +627,11 @@ class CPrintFormPdf {
 
         if(!isset($this->_curGridRow[$gridId])) $this->_curGridRow[$gridId] = 0;
         $this->_curGridRow[$gridId] +=1;
+        if($this->_curGridRow[$gridId] > $this->_datagrids[$gridId]['rows']) {
+            if(empty($this->_datagrids[$gridId]['multipage'])) return false; # no more rows allowed!
+            # TODO: add new page, re-print "header" fields and begin new grid
+#            foreach(
+        }
         $griddata = array();
         foreach($this->_datagrids[$gridId]['fields'] as $fldid) {
             $thisfield = $fldid . $this->_curGridRow[$gridId];
@@ -512,6 +642,46 @@ class CPrintFormPdf {
         if($pageNo<0) return false;
         $this->_data[$pageNo] = array_merge($this->_data[$pageNo],$griddata);
         return true;
+    }
+
+    private function _renderFieldSet($fldset, $dataentity, $debug=false, $pagedef=null) {
+
+        if(count($fldset)) foreach($fldset as $no=>$fcfg) {
+            if(is_array($this->_printedfields) && !in_array($no, $this->_printedfields[$pgno])) continue; // print only selectd fields
+            $fldname = $fcfg['name'];
+            $ftype = $fcfg['type'];
+            if(in_array($ftype,array('rect','poly','image'))) $dataentity[$fldname] = 1;
+            if(!$debug && $ftype!=='plugin') {
+                if(!isset($dataentity[$fldname])) continue;
+                if(!is_scalar($dataentity[$fldname])) continue;
+            }
+            else {
+               $debugValue = ($fcfg['type']=='checkbox') ? 'X' : "XX $fldname";
+            }
+            $fldtype = $fcfg['type'];
+            $strval = isset($dataentity[$fldname]) ? $dataentity[$fldname] : ($debug ? $debugValue : '');
+            if(!empty($fcfg['convert'])) {
+                if(is_callable($fcfg['convert'])) # user converter function
+                $strval = call_user_func($fcfg['convert'], $strval, $dataentity); # second param - the whole data array
+            }
+
+            if($strval === '' && isset($fcfg['fillempty'])) $strval = $fcfg['fillempty']; # substitute empty value with this
+            if($strval==='' && $ftype!=='plugin') continue;
+
+            $initval = '';
+            $fontsize = empty($fcfg['fontsize'])? 0 : $fcfg['fontsize'];
+            $this->_valueToPdf($strval, $fcfg);
+            # repeat printing with offsets defined in 'repeat' block
+            if (empty($fcfg['norepeat']) && isset($pagedef['repeat']) && count($pagedef['repeat'])>0) foreach($pagedef['repeat'] as $repeat) {
+                if (empty($repeat[2])) continue;
+                $tmpcfg = $fcfg;
+                foreach(array_keys($tmpcfg['posx']) as $kk) { $tmpcfg['posx'][$kk] += $repeat[0]; }
+                if(is_array($tmpcfg['posy'])) foreach(array_keys($tmpcfg['posy']) as $kk) { $tmpcfg['posy'][$kk] += $repeat[1]; }
+                else $tmpcfg['posy'] += $repeat[1];
+                $this->_valueToPdf($strval, $tmpcfg);
+            }
+        }
+
     }
     /**
     * Outputs generated PDF according to _tofile parameter (sends to te browser or saves to disc)
@@ -538,14 +708,30 @@ class CPrintFormPdf {
        }
        else return $attr;
     }
+
+    # TCPDF 6.x moves convertHTMLColorToDec() to static method of TCPDF_COLORS class
+    private function colorToDec($clr) {
+        if(class_exists('TCPDF_COLORS')) return TCPDF_COLORS::convertHTMLColorToDec($clr,$this->spot_colors);
+        else return $this->_pdf->convertHTMLColorToDec($clr);
+    }
+
     private function _valueToPdf($value, $fcfg) {
         if(!isset($fcfg['name'])) return;
         $fldname = $fcfg['name'];
         $width = empty($fcfg['width']) ? 0 : (float)$fcfg['width'];
-        $height = empty($fcfg['height']) ? 20 : (float)$fcfg['height'];
+        $height = empty($fcfg['height']) ? 0 : (float)$fcfg['height'];
         $fldtype = isset($fcfg['type']) ? $fcfg['type'] : '';
         $posx = empty($fcfg['posx']) ? array(0) : $fcfg['posx'];
         $posy = empty($fcfg['posy']) ? 0 : $fcfg['posy'];
+
+        # auto-adjust zero width and height
+        if($width<=0) {
+            $width = $this->_pdf->getPageWidth() - $posx[0] - self::DEFAULT_MARGIN;
+        }
+        if($height<=0) {
+            $height = $this->_pdf->getPageHeight() - $posy - self::DEFAULT_MARGIN;
+        }
+
         $cstep = empty($fcfg['charstep']) ? 0 : $fcfg['charstep'];
         $maxlen = empty($fcfg['maxlength']) ? 0 : $fcfg['maxlength'];
         $fntsize = empty($fcfg['size']) ? 0 : (float)$fcfg['size'];
@@ -560,7 +746,7 @@ class CPrintFormPdf {
         $foptions = $this->_evalAttribute($fcfg['options']);
 
         if($color) {
-            $rgb = $this->_pdf->convertHTMLColorToDec($color);
+            $rgb = $this->colorToDec($color);
         }
         else $rgb = array(0,0,0);
         $this->_pdf->SetTextColorArray($rgb);
@@ -571,21 +757,25 @@ class CPrintFormPdf {
         }
 
         if($bgcolor) { # draw "background" filled ractangle
-            $brgb = $this->_pdf->convertHTMLColorToDec($bgcolor);
+            $brgb = $this->colorToDec($bgcolor);
             if($brgb && $width>0 && $height>0) {
                 $this->_pdf->Rect($posx[0], $posy, $width, $height, 'F', array(), array($brgb['R'],$brgb['G'],$brgb['B']));
             }
         }
 
-        if($fntsize !=0 && $this->_basepar['font']['size'] != $fntsize) {
+        if ($fntsize !=0 && $this->_basepar['font']['size'] != $fntsize) {
             $this->_pdf->setFontSize($fntsize);
         }
-        if($fldtype=='image') {
-            $this->_pdf->Image($src,$posx[0],$posy,$width,$height);
+        if ($fldtype==='image') {
+            if(is_file($this->_img_path . $src)) $src = $this->_img_path . $src;
+            elseif(is_file($this->_homedir . $src)) $src = $this->_homedir . $src;
+            if( !$this->_images_disabled )
+                $this->_pdf->Image($src,$posx[0],$posy,$width,$height);
         }
-#       $this->_pdf->SetDrawColorArray(array(0,0,0));
-        elseif($fldtype=='' or $fldtype=='text') {
-            $vUtf = $this->_convertCset($value);
+        elseif($fldtype==='' or $fldtype==='text' or $fldtype === 'money') {
+
+            if($fldtype === 'money') $vUtf = number_format(floatval($value),2,'.',' ');
+            else $vUtf = $this->_convertCset($value);
             if($maxlen>0 && mb_strlen($vUtf)>$maxlen) $vUtf = mb_substr($vUtf,0,$maxlen,'UTF-8');
             if($fntname !='' && $this->_basepar['font']['name'] != $fntname) {
                 $this->_pdf->SetFont($fntname);
@@ -612,11 +802,11 @@ class CPrintFormPdf {
             if($color) $this->_pdf->SetTextColorArray(0); # back to normal black
         }
 
-        elseif($fldtype=='checkbox' or $fldtype=='check') {
+        elseif($fldtype==='checkbox' or $fldtype==='check') {
             if(!empty($value)) $this->_pdf->MultiCell($width,$height,'X', $border, $align, 0, 1, ($posx[0]+$this->offsets[0]), ($posy+$this->offsets[1]) );
         }
 
-        elseif(substr($fldtype,0,7)=='barcode') { # barcode field marked as "barcode:<BCTYPE>"
+        elseif(substr($fldtype,0,7)==='barcode') { # barcode field marked as "barcode:<BCTYPE>"
             $bctype = substr($fldtype,8);
             if(empty($bctype)) $bctype = 'C39';
             #bctype is one of TCPDF supported: C39 | C39+ | C39E | C39E+ |C93|S25|S25+|I25|I25+|C128|C128A|C128B|C128C|EAN2|EAN5|EAN8 ...
@@ -642,7 +832,6 @@ class CPrintFormPdf {
 
         elseif($fldtype=='qrcode') { # Printing QRCode
             $qrtype = 'QRCODE,H';
-#            WriteDebugInfo("Write2DBarcode($value, '$qrtype', ч=$posy, $posy, $width, $height, $style='', $align, false)");
             $style=array();
             if($rgb) $style['fgcolor'] = $rgb;
             $this->_pdf->write2DBarcode($value, $qrtype, ($posx[0]+$this->offsets[0]), ($posy+$this->offsets[1]), $width, $height, $style, $align, false);
@@ -666,13 +855,44 @@ class CPrintFormPdf {
 
             $this->_pdf->Polygon($p, $style, array(),array(), false);
         }
+        elseif($fldtype=='plugin') { # Render specific area by calling plugin.Render()
+
+            $plgclass = isset($fcfg['plugintype']) ? $fcfg['plugintype'] : '';
+            if($plgclass!='' && class_exists($plgclass)  ) {
+
+                $arr = explode(',',$foptions);
+                $opt_arr = array();
+                foreach($arr as $elem) {
+                    $optpair = explode('=',$elem);
+                    if(count($optpair)==2) $opt_arr[$optpair[0]] = $optpair[1];
+                }
+
+                $pdf_plg = new $plgclass($this->_pdf, array_merge($this->_config, $opt_arr), $posx[0],$posy,$width,$height);
+                if($pdf_plg instanceof PfPdfPlugin) {
+                    # plugin-specific options can be passed in plugin attribute options="name=value1,..."
+#                    $pdf_plg->setConfig(array_merge($this->_config, $opt_arr));
+#                    if(count($opt_arr)) $pdf_plg->setConfig($opt_arr);
+
+                    $result = (isset($this->_pluginData[$fldname])) ? $pdf_plg->Render($this->_pluginData[$fldname]) : -1;
+                    if(!$result && function_exists('WriteDebugInfo')) {
+                        $this->_errormessage = $pdf_plg->getErrorMessage();
+                        WriteDebugInfo("plugin $plgclass::Render() error : ".$this->_errormessage);
+                    }
+                }
+                else {
+                    $this->_errormessage = "Unknown plugin class [$plgclass] or not instance of PfPdfPlugin, rendering skipped";
+                    if(function_exists('WriteDebugInfo')) WriteDebugInfo($this->_errormessage);
+                }
+                unset($pdf_plg);
+            }
+        }
         if($rotate) $this->_pdf->StopTransform();
         if($fntsize !=0 && $this->_basepar['font']['size'] != $fntsize) { # back to default font size
             $this->_pdf->setFontSize($this->_basepar['font']['size']);
         }
         $this->_pdf->SetDrawColorArray(0);
-
     }
+
     /**
     * Appends a page to the PDF document
     *
@@ -957,8 +1177,17 @@ class CPrintFormPdf {
         elseif(is_int($param)) $color = array($param,$param, $param);
         else {
             if(!$this->_pdf) $this->_createPdfObject();
-            $color = $this->_pdf->convertHTMLColorToDec((string)$param);
+            $color = $this->colorToDec((string)$param);
         }
         return $color;
+    }
+    /**
+    * Passes data that will be visualized by plugin
+    *
+    * @param mixed $name plugin data block unique name. There maight be more than one plugin-rendered block on the PDF page(s)
+    * @param mixed $data data to be visualized
+    */
+    public function setPluginData($name, $data) {
+        $this->_pluginData[$name] = $data;
     }
 } # class CPrintFormPdf definition end
