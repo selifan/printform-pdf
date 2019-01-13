@@ -3,7 +3,7 @@ Creating documents based on PDF template
 File name :  printform-pdf.php
 Class name:  CPrintFormPdf
 Author    :  Alexander Selifonov
-email     :  as-works [at] narod.ru , alex [at] selifan.ru
+email     :  alex [at] selifan.ru
 link      :  www.selifan.ru
 
 Distributed under BSD License :
