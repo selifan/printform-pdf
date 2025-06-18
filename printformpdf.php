@@ -635,6 +635,7 @@ class PrintFormPdf {
                         ,'header_font' => $headersFontName
                         ,'header_fontsize' => $headersFontSize
                         ,'header_bgcolor' => $headersBgColor
+                        ,'rowbgcolor' => (isset($item['rowbgcolor']) ? (string)$item['rowbgcolor'] : '')
                         # TODO: joinby,joinfields - special colimn names for joining adjacent rows
                     ];
                     $pageno = count($this->father->_pagedefs)-1;
@@ -773,6 +774,15 @@ class PrintFormPdf {
         $bordercolor = ($this->_evalAttribute($this->_flextables[$flexId]['bordercolor']));
         $borderRGB = empty($bordercolor) ? [0,0,0] : $this->_parseColor($bordercolor);
         $arColumns = [$startX]; # X positions of all start columns
+
+        $rowBgColors = [];
+        if(!empty($this->_flextables[$flexId]['rowbgcolor'])) {
+            $arTmp = explode(",",$this->_flextables[$flexId]['rowbgcolor']);
+            foreach($arTmp as $oneBg) {
+                $rowBgColors[] = $this->_parseColor($oneBg);
+            }
+        }
+        $multiPage = FALSE; # TODO: support multi-page generation for big data array
         $headers =& $this->_flextables[$flexId]['headers'];
         # exit(__FILE__ .':'.__LINE__.' _flextables:<pre>' . print_r($this->_flextables[$flexId],1) . '</pre>');
         $headersFontName = $this->_flextables[$flexId]['header_font'];
@@ -791,7 +801,7 @@ class PrintFormPdf {
         }
         $maxRight = round($this->_pdf->getPageWidth() - $startX, 2);
         if($maxRight < $endX) {
-            # auto shrink X pos to fit
+            # auto shrink X positions to fit on page
             $kShrink = $maxRight / $endX;
             foreach($arColumns as $no => &$colPosX) {
                 # echo "shrink $no for ", print_r(
@@ -807,7 +817,8 @@ class PrintFormPdf {
 
         # $this->_pdf->SetLineWidth(0.4);
         if($border>0 && $border == '1') $border = 0.2;
-        $this->_pdf->SetLineStyle(['width'=>$border, 'join'=>'miter', 'dash'=>0, 'color'=>$borderRGB]);
+        if($border>0)
+            $this->_pdf->SetLineStyle(['width'=>$border, 'join'=>'miter', 'dash'=>0, 'color'=>$borderRGB]);
 
         $curPosY = $startY;
         if(count($headers)) {
@@ -853,11 +864,13 @@ class PrintFormPdf {
                     $this->_pdf->Line($colX,$startY,$colX, $curPosY); # vertival lines (column delimiters)
                 }
             }
-
         }
         else {
             if($border>0) $this->_pdf->Line($startX,$startY,$endX, $startY); # upper border
         }
+
+        # Draw data rows
+        $bgColOff = 0;
         foreach($this->dataentity[$sourceid] as $rowid => $dataRow) {
             $colNo = 0;
             $maxHeight = 0;
@@ -880,6 +893,22 @@ class PrintFormPdf {
                 $maxHeight = max($maxHeight, $thisHeight);
                 # echo ("$fldid: $fvalue/$fldWidth: height is $thisHeight<br>");
                 $colNo++;
+            }
+            if(($curPosY + $maxHeight + $padding * 2)>$this->_pdf->getPageHeight()) {
+                # page bottom will be reached
+                # TODO: multipage print
+                break;
+            }
+            if($height > 0 && ($curPosY-$startY + $maxHeight + $padding * 2)>$height) {
+                # height limit will be reached
+                break;
+            }
+            if(count($rowBgColors)) {
+                # paint row background
+                $thisRowBg = $rowBgColors[$bgColOff];
+                if( (++$bgColOff) >= count($rowBgColors)) $bgColOff = 0;
+                $this->_pdf->Rect(($startX+$border/2), ($curPosY+$border), ($endX-$startX-$border/2),
+                  ($maxHeight+2*$padding - $border/2), 'F', [], array_values($thisRowBg));
             }
             # print fields in data row
             foreach($arFields as $no => $fDef) {
@@ -906,9 +935,8 @@ class PrintFormPdf {
                 }
             }
             $curPosY = $nextPosY;
-
         }
-        # exit("<hr>");
+        return $curPosY;
     }
     /**
     * returns all fields definitions on page
