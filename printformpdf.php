@@ -1737,7 +1737,8 @@ class PrintFormPdf {
                         $this->_renderFieldSet($blkFldSet, $this->dataentity, $debug);
                 }
                 # draw flextable(s) on the page
-                if (count($pagedef['flextables'])>0) foreach ($pagedef['flextables'] as $flexId) {
+                if (isset($pagedef['flextables']) && is_array($pagedef['flextables'])
+                   && count($pagedef['flextables'])>0) foreach ($pagedef['flextables'] as $flexId) {
                     $this->drawFlexTable($flexId);
                 }
 
