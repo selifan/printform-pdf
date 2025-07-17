@@ -5,7 +5,7 @@
 * loaded configuration from XML file or string.
 * @uses TCPDF, FPDF, TCPDI classes for reading/writing pdf body, see http://www.tcpdf.org/
 * @Author Alexander Selifonov, <alex [at] selifan {dot} ru>
-* @version 1.86.001 2025-06-18
+* @version 1.87.001-beta 2025-07-17
 * @Link: https://github.com/selifan/prinformpdf
 * @license http://www.opensource.org/licenses/bsd-license.php    BSD
 *
@@ -73,6 +73,7 @@ class PrintFormPdf {
     protected $_outname = '';
     protected $defaultTextColor = 0;
     protected $pageSpecs = [];
+    protected $curOrientation = 'P';
     protected $_pdf = null;
     protected $pgno = 0;
     protected $prnPage = 0; // printed page number
@@ -91,6 +92,7 @@ class PrintFormPdf {
     protected $_printedfields = false;
     protected $_datagrids = [];
     protected $_flextables = [];
+    protected $multiFlexDrawn = FALSE;
     protected $_curGridRow = [];
     protected $_specialPages = 0;
     protected $_mpgrid = FALSE; # becomes TRUE if multi-paging grid detected
@@ -357,7 +359,7 @@ class PrintFormPdf {
         }
         if ( isset($xml->templatefiles) ) {
             foreach($xml->templatefiles->children() as $key=>$item) {
-                if(!empty($item['src'])) {
+                if($key ==='template' && !empty($item['src'])) {
                     $this->_templatefile[] =  $this->readTemplateDef($item);
                 }
             }
@@ -608,6 +610,7 @@ class PrintFormPdf {
                         $headersFontName = isset($item->headers['font']) ? (string)$item->headers['font'] : $this->_basepar['font']['name'];
                         $headersFontSize = isset($item->headers['size']) ? (float)$item->headers['size'] : $this->_basepar['font']['size'];
                         $headersBgColor = isset($item->headers['bgcolor']) ? (string)$item->headers['bgcolor'] : '';
+                        $headersAllPgs  = isset($item->headers['allpages']) ? (string)$item->headers['allpages'] : FALSE;
                         # exit(__FILE__ .':'.__LINE__." headersFontName:[$headersFontName] headersFontSize=[$headersFontSize] <pre>".print_r($item->headers,1).'<.pre>');
                         foreach($item->headers->Children() as $chKey => $chItem) {
                             if($chKey!=='header') continue;
@@ -627,7 +630,9 @@ class PrintFormPdf {
                         ,'fields'=> $fldArr # field names OR FieldDef array defined inside <datagrid>
                         ,'posx'  => (isset($item['posx']) ? (string)$item['posx'] : '0')
                         ,'posy'  => (isset($item['posy']) ? (string)$item['posy'] : '0')
-                        ,'height'  => (isset($item['height']) ? (string)$item['height'] : '0')
+                        ,'nextposy'  => (isset($item['nextposy']) ? (string)$item['nextposy'] : '')
+                        ,'height'  => (isset($item['height']) ? (string)$item['height'] : '')
+                        ,'bottom'  => (isset($item['bottom']) ? (string)$item['bottom'] : '')
                         ,'border'  => (isset($item['border']) ? (string)$item['border'] : '1')
                         ,'bordercolor'  => (isset($item['bordercolor']) ? (string)$item['bordercolor'] : '')
                         ,'padding'  => (isset($item['padding']) ? (string)$item['padding'] : '1')
@@ -635,6 +640,7 @@ class PrintFormPdf {
                         ,'header_font' => $headersFontName
                         ,'header_fontsize' => $headersFontSize
                         ,'header_bgcolor' => $headersBgColor
+                        ,'header_allpages' => $headersAllPgs
                         ,'rowbgcolor' => (isset($item['rowbgcolor']) ? (string)$item['rowbgcolor'] : '')
                         # TODO: joinby,joinfields - special colimn names for joining adjacent rows
                     ];
@@ -768,7 +774,75 @@ class PrintFormPdf {
         # writeDebugInfo("drawFlexTable($flexId) - $sourceid");
         $startX = floatval($this->_evalAttribute($this->_flextables[$flexId]['posx']));
         $startY = floatval($this->_evalAttribute($this->_flextables[$flexId]['posy']));
-        $height = floatval($this->_evalAttribute($this->_flextables[$flexId]['height'])); # not used for now...
+        $nextPosY = FALSE;
+        if(!empty($this->_flextables[$flexId]['nextposy'])) {
+            $nextPosY = floatval($this->_flextables[$flexId]['nextposy']);
+            $this->multiFlexDrawn = TRUE;
+        }
+        $height = floatval($this->_evalAttribute($this->_flextables[$flexId]['height']));
+        $bottom = $this->_flextables[$flexId]['bottom'] ?? '';
+        if($bottom !=='') {
+            $height = round(($this->_pdf->getPageHeight() - $startY - floatval($bottom)), 2);
+        }
+
+        if(!isset($this->dataentity[$sourceid]) || !is_array($this->dataentity[$sourceid])
+          || !count($this->dataentity[$sourceid]))
+            return $startY;
+
+        $arFlexData = $this->dataentity[$sourceid];
+
+        $flexPage = 0;
+        do {
+            $arFlexData = $this->_renderFlexTablePage($flexId, $arFlexData,$flexPage);
+
+            if(is_array($arFlexData) && count($arFlexData)) {
+                # writeDebugInfo("page: {$this->prnPage}, this: ", $this);
+                $orientation = $this->_basepar['page']['orientation']; # TODO: get from current page
+                $this->finalizePage();
+                $this->prnPage++;
+                $this->_pdf->addPage($this->curOrientation);
+                $flexPage++;
+            }
+        } while (is_array($arFlexData) && count($arFlexData)>0);
+        if($flexPage > 0) $this->finalizePage();
+        return $flexPage;
+    }
+
+    # finally print "standart" blocks
+    private function finalizePage($orientation=FALSE) {
+        if(!$orientation) $orientation = $this->curOrientation;
+        if(count($this->_apFields)) {
+            $this->_renderFieldSet($this->_apFields, array_merge($this->_apValues, $this->dataentity), 0, null, $orientation);
+        }
+        if(TRUE) {
+            if($this->prnPage>1) $this->_drawPageNo($this->prnPage);
+        }
+    }
+    # render one page of flextable (if not multi-page, just one page will be printed regardless of data amount)
+    private function _renderFlexTablePage($flexId, $arFlexData, $flexPage) {
+        # writeDebugInfo("$flexId/$flexPage: passed data ", $arFlexData);
+        $startX = floatval($this->_evalAttribute($this->_flextables[$flexId]['posx']));
+        $startY = floatval($this->_evalAttribute($this->_flextables[$flexId]['posy']));
+        # writeDebugInfo("$flexId page $flexPage");
+        $nextPosY = FALSE;
+        if(!empty($this->_flextables[$flexId]['nextposy'])) {
+            $nextPosY = floatval($this->_flextables[$flexId]['nextposy']);
+            $this->multiFlexDrawn = TRUE;
+        }
+        if($flexPage>0 && !empty($nextPosY)) # new page, start from top of the page?
+            $startY = $nextPosY;
+
+        $height = floatval($this->_evalAttribute($this->_flextables[$flexId]['height']));
+        $bottom = $this->_flextables[$flexId]['bottom'] ?? '';
+        if($bottom !=='') {
+            $height = round(($this->_pdf->getPageHeight() - $startY - floatval($bottom)), 2);
+        }
+
+        if(!is_array($arFlexData)
+          || !count($arFlexData)) {
+            writeDebugInfo("empty data array");
+            return 0;
+        }
         $border = ($this->_evalAttribute($this->_flextables[$flexId]['border']));
         $padding = floatval($this->_evalAttribute($this->_flextables[$flexId]['padding']));
         $bordercolor = ($this->_evalAttribute($this->_flextables[$flexId]['bordercolor']));
@@ -782,13 +856,15 @@ class PrintFormPdf {
                 $rowBgColors[] = $this->_parseColor($oneBg);
             }
         }
-        $multiPage = FALSE; # TODO: support multi-page generation for big data array
+
         $headers =& $this->_flextables[$flexId]['headers'];
         # exit(__FILE__ .':'.__LINE__.' _flextables:<pre>' . print_r($this->_flextables[$flexId],1) . '</pre>');
         $headersFontName = $this->_flextables[$flexId]['header_font'];
         if(empty($headersFontName)) $headersFontName = $this->_basepar['font']['name'];
         $headersFontSize = $this->_flextables[$flexId]['header_fontsize'];
         $headersBgColor = $this->_flextables[$flexId]['header_bgcolor'];
+        $headersAllPgs = $this->_flextables[$flexId]['header_allpages'];
+
         if(empty($headersFontSize)) $headersFontSize = 10;
 
         # exit(__FILE__ .':'.__LINE__." headersFontName=$headersFontName, headersFontSize=$headersFontSize:<pre>" . print_r($this->_flextables[$flexId],1) . '</pre>');
@@ -811,9 +887,6 @@ class PrintFormPdf {
         }
         # echo (__FILE__ .':'.__LINE__." page max Right border:[$maxRight] <pre>". print_r($arFields,1) . "arColumns: "  . print_r($arColumns,1) . '</pre>' );
         # exit(__FILE__ .':'.__LINE__.' dataentity:<pre>' . print_r($this->dataentity,1) . '</pre>');
-        if(!isset($this->dataentity[$sourceid]) || !is_array($this->dataentity[$sourceid])
-          || !count($this->dataentity[$sourceid]))
-            return $startY;
 
         # $this->_pdf->SetLineWidth(0.4);
         if($border>0 && $border == '1') $border = 0.2;
@@ -821,9 +894,9 @@ class PrintFormPdf {
             $this->_pdf->SetLineStyle(['width'=>$border, 'join'=>'miter', 'dash'=>0, 'color'=>$borderRGB]);
 
         $curPosY = $startY;
-        if(count($headers)) {
+        if(count($headers) && ($flexPage==0 || $headersAllPgs)) { # headers only on the first page ?
             # draw headers row
-            # 1. Count max height neede for header row
+            # 1. Count max height needeв for header row
             $maxHeight = 0;
 
             $fsize = $headersFontSize;
@@ -871,10 +944,13 @@ class PrintFormPdf {
 
         # Draw data rows
         $bgColOff = 0;
-        foreach($this->dataentity[$sourceid] as $rowid => $dataRow) {
+        while(count($arFlexData)>0) {
+            $data_keys = array_keys($arFlexData);
+            $dataRow = $arFlexData[$data_keys[0]];
+            # writeDebugInfo("data row: ", $dataRow);
             $colNo = 0;
             $maxHeight = 0;
-            # echo "datarow $rowid... <hr>";
+            # echo "datarow ... <hr>";
             foreach($arFields as $no => $fDef) {
                 $fldPosX = $arColumns[$no];
                 $fldid = $fDef['name'];
@@ -925,8 +1001,10 @@ class PrintFormPdf {
                 if(empty($fDef['valign'])) $fDef['valign'] = 'M'; # center vertivcally
                 $this->_valueToPdf($dataRow[$fldid], $fDef);
             }
+            array_shift($arFlexData); # row printed, delete it from data array
+
             # $maxHeight calculated. draw a row...
-            # echo "risk $rowid: maxHeight = $maxHeight<br>";
+
             $nextPosY = $curPosY + $maxHeight + $padding * 2;
             if($border>0) {
                 $this->_pdf->Line($startX,$nextPosY,$endX, $nextPosY); # low border
@@ -936,7 +1014,7 @@ class PrintFormPdf {
             }
             $curPosY = $nextPosY;
         }
-        return $curPosY;
+        return $arFlexData; # rows rendered on this page (no space)
     }
     /**
     * returns all fields definitions on page
@@ -1443,7 +1521,7 @@ class PrintFormPdf {
         # Populating with data...
         foreach($this->_data as $entno=>$onedatablock) { #<3>
             $this->_dataBlock = $onedatablock;
-            $this->dataentity = $onedatablock;
+            $this->dataentity =& $onedatablock;
             $this->pageNoModifier = 0;
             $this->pgno = $this->prnPage = 0;
             $this->_curSrcFile = $this->_curSrcPage = $this->_curSrcPgcount = -1;
@@ -1521,7 +1599,7 @@ class PrintFormPdf {
                     # page has own pdf template file and page no
                     $pageNo = $pagedef['template']['page'] ?? 1;
                     $pageSpec = $this->getPdfStructure($pagedef['template']['src'],$pageNo,$homepath);
-                    $orientation = $pageSpec['orientation'] ?? 'P';
+                    $orientation = $this->curOrientation = $pageSpec['orientation'] ?? 'P';
                     $realFileName = $pageSpec['pdf'] ?? '';
                     $realPage = $pageSpec['page'] ?? $pageNo;
                     if(self::$DEBPRINT) echo "Using own template: $realFileName / page[$realPage]<br>";
@@ -1737,9 +1815,11 @@ class PrintFormPdf {
                         $this->_renderFieldSet($blkFldSet, $this->dataentity, $debug);
                 }
                 # draw flextable(s) on the page
+                $this->multiFlexDrawn = FALSE;
                 if (isset($pagedef['flextables']) && is_array($pagedef['flextables'])
                    && count($pagedef['flextables'])>0) foreach ($pagedef['flextables'] as $flexId) {
                     $this->drawFlexTable($flexId);
+                    if($this->multiFlexDrawn) break; # ignore all other flextables on page, if multi-page one was rendered
                 }
 
                 # Common fields existing on ALL pages - if order is "Finally" (after all printed fields)
@@ -1840,6 +1920,7 @@ class PrintFormPdf {
     */
     protected function _drawPageNo($realPageNo=FALSE, $ownPagination=FALSE) {
         # TODO: define _basepar or _tmpBasepar use
+        static $printedPage = -1;
         if($ownPagination) {
             # writeDebugInfo("$realPageNo own pagination: ", $ownPagination);
             $pgConfig = $ownPagination;
@@ -1847,7 +1928,9 @@ class PrintFormPdf {
         else $pgConfig = $this->_basepar['pagination'] ?? FALSE;
 
         if(!empty($pgConfig['skipfirst']) && $realPageNo == 1) return; # пропуск печати номера первой страницы
-
+        if($printedPage == $realPageNo) return; # avoid printing twice
+        $printedPage = $realPageNo;
+        writeDebugInfo("printing page $realPageNo");
         if (!empty($pgConfig) && empty($this->_paginatonMode)) {
             $pageWidth  = $this->_pdf->getPageWidth();
             $pageHeight = $this->_pdf->getPageHeight();
